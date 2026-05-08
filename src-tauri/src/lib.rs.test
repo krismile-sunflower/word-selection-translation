@@ -1,0 +1,17 @@
+use serde::{Deserialize, Serialize};
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct TranslateSettings {
+    pub api_key: String,
+    pub base_url: String,
+}
+#[tauri::command]
+pub async fn translate_text(text: String, settings: TranslateSettings) -> Result<String, String> {
+    Ok(text)
+}
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    tauri::Builder::default()
+        .invoke_handler(tauri::generate_handler![translate_text])
+        .run(tauri::generate_context!())
+        .expect("error");
+}
