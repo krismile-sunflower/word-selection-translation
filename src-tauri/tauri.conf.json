@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "划词翻译",
+  "productName": "HuaCiFanYi",
   "version": "0.1.0",
   "identifier": "com.huacifanyi.desktop",
   "build": {
