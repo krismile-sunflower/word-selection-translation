@@ -46,6 +46,34 @@ const CSS = `
   html, body { margin: 0; padding: 0; overflow: hidden; }
   .ink-root * { box-sizing: border-box; }
 
+  .ink-card {
+    position: absolute;
+    inset: 0;
+    background: rgba(10,8,20,0.97);
+    backdrop-filter: blur(32px) saturate(220%);
+    -webkit-backdrop-filter: blur(32px) saturate(220%);
+    border-radius: 17px;
+    border: 1px solid rgba(255,255,255,0.06);
+    box-shadow: 0 36px 90px rgba(0,0,0,0.78), 0 6px 22px rgba(0,0,0,0.44), inset 0 1px 0 rgba(255,255,255,0.034);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    will-change: transform, opacity, filter;
+    opacity: 0;
+    transform: translateY(14px) scale(0.978);
+    filter: blur(7px);
+  }
+
+  .ink-card.enter {
+    opacity: 1;
+    transform: none;
+    filter: none;
+    transition:
+      opacity .24s ease,
+      transform .34s cubic-bezier(.16,1,.3,1),
+      filter .30s ease;
+  }
+
   .ink-topbar { display: flex; align-items: center; gap: 6px; padding: 12px 14px 0; }
   .ink-provider-wrap { flex: 1; display: flex; justify-content: center; }
 
@@ -156,7 +184,7 @@ export default function PopupCard() {
   const [errorMsg, setErrorMsg] = useState("");
   const [copied, setCopied] = useState(false);
   const [direction, setDirection] = useState<"EN → 中" | "中 → EN">("EN → 中");
-  const [animKey, setAnimKey] = useState(0);
+  const [entering, setEntering] = useState(false);
   const stateRef = useRef<State>("idle");
 
   const [providers, setProviders] = useState<Provider[]>([]);
@@ -183,7 +211,6 @@ export default function PopupCard() {
     setState("loading");
     setTranslation("");
     setErrorMsg("");
-    setAnimKey((k) => k + 1);
     try {
       const result = await invoke<string>("translate_text", { text });
       setTranslation(result);
@@ -205,6 +232,8 @@ export default function PopupCard() {
       setDirection(detectDirection(payload.text));
       setCopied(false);
       setShowDrop(false);
+      setEntering(false);
+      requestAnimationFrame(() => requestAnimationFrame(() => setEntering(true)));
       doTranslate(payload.text);
     }).then((fn) => { u1 = fn; });
 
@@ -262,20 +291,7 @@ export default function PopupCard() {
       onMouseLeave={() => { if (stateRef.current !== "loading") { setShowDrop(false); hideWindow(); } }}
     >
       <style>{CSS}</style>
-      <div
-        key={animKey}
-        style={{
-          position: "absolute" as const, inset: 0,
-          background: "rgba(10,8,20,0.97)",
-          backdropFilter: "blur(32px) saturate(220%)",
-          WebkitBackdropFilter: "blur(32px) saturate(220%)",
-          borderRadius: "17px",
-          border: "1px solid rgba(255,255,255,0.06)",
-          boxShadow: "0 36px 90px rgba(0,0,0,0.78), 0 6px 22px rgba(0,0,0,0.44), inset 0 1px 0 rgba(255,255,255,0.034)",
-          display: "flex", flexDirection: "column" as const, overflow: "hidden",
-          animation: "appear 0.22s cubic-bezier(0.16,1,0.3,1) both",
-        }}
-      >
+      <div className={`ink-card${entering ? " enter" : ""}`}>
         {/* Top bar */}
         <div className="ink-topbar">
           <span className={`ink-dir-tag ink-dir-${dirCls}`}>{direction}</span>
