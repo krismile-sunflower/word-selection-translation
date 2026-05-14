@@ -128,7 +128,10 @@ fn start_sidecar(app: &AppHandle) {
             c.current_dir(&project_root);
             c
         } else {
-            Command::new("sidecar")
+            let resource_dir = app_handle.path().resource_dir()
+                .unwrap_or_else(|_| std::env::current_dir().unwrap_or_default());
+            let c = Command::new(resource_dir.join("sidecar.exe"));
+            c
         };
 
         let mut child = match cmd

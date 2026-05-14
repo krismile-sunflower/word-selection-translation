@@ -7,7 +7,9 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "build:sidecar": "cd sidecar && pnpm build && pnpm build:exe",
+    "build:all": "pnpm run build:sidecar && pnpm tauri build"
   },
   "dependencies": {
     "react": "^19.1.0",
