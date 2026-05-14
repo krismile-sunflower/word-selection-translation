@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { testProviderViaSidecar } from "./sidecar";
 
 interface Provider {
   id: string;
@@ -409,11 +410,7 @@ export default function Settings() {
     setTestState((s) => ({ ...s, [p.id]: "testing" }));
     setTestMsg((m) => ({ ...m, [p.id]: "" }));
     try {
-      const r = await invoke<string>("test_translation", {
-        text: "Hello world",
-        provider: p,
-        systemPrompt: config.systemPrompt,
-      });
+      const r = await testProviderViaSidecar(p, config.systemPrompt);
       setTestState((s) => ({ ...s, [p.id]: "ok" }));
       setTestMsg((m) => ({ ...m, [p.id]: r }));
     } catch (e) {

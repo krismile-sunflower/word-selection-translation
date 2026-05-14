@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback, useRef } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { translateViaSidecar } from "./sidecar";
 
 interface SelectionPayload { text: string; x: number; y: number }
 interface Provider { id: string; name: string; baseUrl: string; model: string; apiKey: string }
@@ -300,7 +301,7 @@ export default function PopupCard() {
     setTranslation("");
     setErrorMsg("");
     try {
-      const result = await invoke<string>("translate_text", { text });
+      const result = await translateViaSidecar(text, activeProviderId, fullConfig?.systemPrompt);
       setTranslation(result);
       setTextKey((k) => k + 1);
       setState("success");
@@ -308,7 +309,7 @@ export default function PopupCard() {
       setState("error");
       setErrorMsg(String(e));
     }
-  }, []);
+  }, [activeProviderId, fullConfig?.systemPrompt]);
 
   useEffect(() => {
     loadConfig();

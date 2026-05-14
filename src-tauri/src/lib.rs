@@ -5,7 +5,9 @@ use std::sync::{
     mpsc::SyncSender,
     Mutex, OnceLock,
 };
-use std::time::Duration;
+use std::io::{BufRead, BufReader};
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_clipboard_manager::ClipboardExt;
 use tauri_plugin_store::StoreExt;
@@ -63,6 +65,7 @@ impl Default for AppConfig {
 }
 
 pub struct ConfigState(pub Mutex<AppConfig>);
+pub struct SidecarState(pub Mutex<Option<u16>>);
 
 // ── Config persistence ────────────────────────────────────────────────────────
 
@@ -98,6 +101,86 @@ fn persist_config(app: &AppHandle, config: &AppConfig) {
         let _ = store.set("config", serde_json::to_value(config).unwrap_or(serde_json::Value::Null));
         let _ = store.save();
     }
+}
+
+fn start_sidecar(app: &AppHandle) {
+    let app_handle = app.clone();
+    std::thread::spawn(move || {
+        let config_dir = match app_handle.path().app_data_dir() {
+            Ok(d) => d,
+            Err(e) => { eprintln!("app_data_dir error: {}", e); return; }
+        };
+        if let Err(e) = std::fs::create_dir_all(&config_dir) {
+            eprintln!("create_dir_all error: {}", e); return;
+        }
+        let config_path = config_dir.join("settings.json");
+
+        let is_dev = cfg!(debug_assertions);
+        let mut cmd = if is_dev {
+            let project_root = std::env::var("CARGO_MANIFEST_DIR")
+                .map(std::path::PathBuf::from)
+                .ok()
+                .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+                .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+            let sidecar_path = project_root.join("sidecar/dist/index.cjs");
+            let mut c = Command::new("node");
+            c.arg(&sidecar_path);
+            c.current_dir(&project_root);
+            c
+        } else {
+            Command::new("sidecar")
+        };
+
+        let mut child = match cmd
+            .arg("--config-path")
+            .arg(&config_path)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+        {
+            Ok(c) => c,
+            Err(e) => { eprintln!("spawn sidecar failed: {}", e); return; }
+        };
+
+        if let Some(stderr) = child.stderr.take() {
+            std::thread::spawn(move || {
+                let reader = BufReader::new(stderr);
+                for line in reader.lines() {
+                    if let Ok(line) = line {
+                        eprintln!("[sidecar stderr] {}", line);
+                    }
+                }
+            });
+        }
+
+        if let Some(stdout) = child.stdout.take() {
+            let reader = BufReader::new(stdout);
+            let start = Instant::now();
+            for line in reader.lines() {
+                if start.elapsed() > Duration::from_secs(10) {
+                    eprintln!("sidecar start timeout"); break;
+                }
+                match line {
+                    Ok(line) => {
+                        println!("[sidecar stdout] {}", line);
+                        if let Ok(msg) = serde_json::from_str::<serde_json::Value>(&line) {
+                            if msg.get("type").and_then(|v| v.as_str()) == Some("ready") {
+                                if let Some(port) = msg.get("port").and_then(|v| v.as_u64()) {
+                                    if let Some(state) = app_handle.try_state::<SidecarState>() {
+                                        *state.0.lock().unwrap() = Some(port as u16);
+                                    }
+                                    println!("Sidecar ready on port {}", port);
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => { eprintln!("read line error: {}", e); break; }
+                }
+            }
+        }
+        eprintln!("sidecar failed to start or did not emit ready");
+    });
 }
 
 // ── Tray menu ─────────────────────────────────────────────────────────────────
@@ -182,78 +265,16 @@ fn start_mouse_hook(app: AppHandle) {
     });
 }
 
-// ── LLM client ───────────────────────────────────────────────────────────────
+// ── Sidecar URL ──────────────────────────────────────────────────────────────
 
-#[derive(Serialize, Deserialize)]
-struct ChatMessage { role: String, content: String }
-#[derive(Serialize)]
-struct ChatRequest { model: String, messages: Vec<ChatMessage>, stream: bool }
-#[derive(Deserialize)]
-struct ChatChoice { message: ChatMessage }
-#[derive(Deserialize)]
-struct ChatResponse { choices: Vec<ChatChoice> }
-
-const DEFAULT_SYSTEM_PROMPT: &str = "You are a concise translation assistant. \
-Detect the language: if it is Chinese, translate to English; \
-if it is English or any other language, translate to Chinese. \
-Return ONLY the translated text, no explanations, no original text.";
-
-async fn do_translate(text: &str, provider: &Provider, system_prompt: Option<&str>) -> Result<String, String> {
-    let client = reqwest::Client::new();
-    let sp = system_prompt.filter(|s| !s.trim().is_empty()).unwrap_or(DEFAULT_SYSTEM_PROMPT);
-    let body = ChatRequest {
-        model: provider.model.clone(),
-        messages: vec![
-            ChatMessage { role: "system".to_string(), content: sp.to_string() },
-            ChatMessage { role: "user".to_string(), content: text.to_string() },
-        ],
-        stream: false,
-    };
-    let url = format!("{}/chat/completions", provider.base_url.trim_end_matches('/'));
-    let resp = client.post(&url)
-        .header("Authorization", format!("Bearer {}", provider.api_key))
-        .header("Content-Type", "application/json")
-        .json(&body)
-        .timeout(Duration::from_secs(30))
-        .send().await
-        .map_err(|e| format!("请求失败: {}", e))?;
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let body = resp.text().await.unwrap_or_default();
-        return Err(format!("API 错误 {}: {}", status, body));
-    }
-    let chat_resp: ChatResponse = resp.json().await.map_err(|e| format!("解析响应失败: {}", e))?;
-    chat_resp.choices.into_iter().next()
-        .map(|c| c.message.content.trim().to_string())
-        .ok_or_else(|| "无翻译结果".to_string())
+#[tauri::command]
+fn get_sidecar_url(sidecar_state: tauri::State<'_, SidecarState>) -> Result<String, String> {
+    let port = sidecar_state.0.lock().map_err(|e| e.to_string())?
+        .ok_or_else(|| "Sidecar 尚未启动，请稍后重试".to_string())?;
+    Ok(format!("http://localhost:{}", port))
 }
 
 // ── Tauri commands ────────────────────────────────────────────────────────────
-
-#[tauri::command]
-fn translate_text(text: String, config_state: tauri::State<'_, ConfigState>) -> Result<String, String> {
-    let config = config_state.0.lock().map_err(|e| e.to_string())?.clone();
-    let provider = config.providers.iter().find(|p| p.id == config.active_provider_id)
-        .or_else(|| config.providers.first()).cloned()
-        .ok_or_else(|| "未配置服务商，请在设置页添加".to_string())?;
-    let system_prompt = config.system_prompt.clone();
-    let (tx, rx) = std::sync::mpsc::channel();
-    tauri::async_runtime::spawn(async move {
-        let result = do_translate(&text, &provider, system_prompt.as_deref()).await;
-        let _ = tx.send(result);
-    });
-    rx.recv().map_err(|e| format!("Channel error: {}", e))?
-}
-
-#[tauri::command]
-fn test_translation(text: String, provider: Provider, system_prompt: Option<String>) -> Result<String, String> {
-    let (tx, rx) = std::sync::mpsc::channel();
-    tauri::async_runtime::spawn(async move {
-        let result = do_translate(&text, &provider, system_prompt.as_deref()).await;
-        let _ = tx.send(result);
-    });
-    rx.recv().map_err(|e| format!("Channel error: {}", e))?
-}
 
 #[tauri::command]
 fn get_config(config_state: tauri::State<'_, ConfigState>) -> Result<AppConfig, String> {
@@ -379,11 +400,13 @@ pub fn run() {
                 })
                 .build(app)?;
             app.manage(ConfigState(Mutex::new(config)));
+            app.manage(SidecarState(Mutex::new(None)));
+            start_sidecar(app.handle());
             #[cfg(windows)]
             start_mouse_hook(app.handle().clone());
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![translate_text, test_translation, get_config, save_config, show_popup])
+        .invoke_handler(tauri::generate_handler![get_sidecar_url, get_config, save_config, show_popup])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
